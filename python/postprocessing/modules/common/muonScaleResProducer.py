@@ -24,12 +24,23 @@ class muonScaleResProducer(Module):
     def __init__(self, rc_dir, rc_corrections, dataYear):
         p_postproc = '%s/src/PhysicsTools/NanoAODTools/python/postprocessing' % os.environ[
             'CMSSW_BASE']
-        p_roccor = p_postproc + '/data/' + rc_dir
-        if "/RoccoR_cc.so" not in ROOT.gSystem.GetLibraries():
-            p_helper = '%s/RoccoR.cc' % p_roccor
-            print('Loading C++ helper from ' + p_helper)
+        self.rc_dir = rc_dir
+        p_roccor = p_postproc + '/data/' + self.rc_dir
+        # Use RoccoR for Run2, MuonScaReWrapper for Run3
+        if self.rc_dir.startswith('roccor.Run3'):
+            # Load MuonScaReWrapper
+            p_helper = '%s/MuonScaReWrapper.cc' % p_roccor
+            print('Loading Run3 C++ helper from ' + p_helper)
             ROOT.gROOT.ProcessLine('.L ' + p_helper)
-        self._roccor = ROOT.RoccoR(p_roccor + '/' + rc_corrections)
+            # Pass JSON correction file
+            self._roccor = ROOT.MuonScaReWrapper(p_roccor + '/' + rc_corrections)
+        else:
+            # Original Run2 RoccoR interface
+            if "/RoccoR_cc.so" not in ROOT.gSystem.GetLibraries():
+                p_helper = '%s/RoccoR.cc' % p_roccor
+                print('Loading C++ helper from ' + p_helper)
+                ROOT.gROOT.ProcessLine('.L ' + p_helper)
+            self._roccor = ROOT.RoccoR(p_roccor + '/' + rc_corrections)
 
     def beginJob(self):
         pass
@@ -52,7 +63,25 @@ class muonScaleResProducer(Module):
         if self.is_mc:
             genparticles = Collection(event, "GenPart")
         roccor = self._roccor
-        if self.is_mc:
+        # Run3 branch: call MuonScaReWrapper interface
+        if self.rc_dir.startswith('roccor.Run3'):
+            pt_corr = []
+            pt_err = []
+            for mu in muons:
+                if self.is_mc:
+                    # MC: smearing
+                    u1 = random.uniform(0.0, 1.0)
+                    corr = mk_safe(roccor.kSmearMC, mu.charge, mu.pt, mu.eta, mu.phi, mu.nTrackerLayers, u1)
+                    corr_err = mk_safe(roccor.kSmearMCerror, mu.charge, mu.pt, mu.eta, mu.phi, mu.nTrackerLayers, u1)
+                else:
+                    # Data: scaling
+                    corr = mk_safe(roccor.kScaleDT, mu.charge, mu.pt, mu.eta, mu.phi)
+                    corr_err = mk_safe(roccor.kScaleDTerror, mu.charge, mu.pt, mu.eta, mu.phi)
+                pt_corr.append(corr)
+                pt_err.append(corr_err)
+        else:
+            # Original Run2 processing
+            genparticles = Collection(event, "GenPart")
             pt_corr = []
             pt_err = []
             for mu in muons:
@@ -74,16 +103,6 @@ class muonScaleResProducer(Module):
                         mu.pt * mk_safe(roccor.kSmearMCerror, mu.charge, mu.pt,
                                         mu.eta, mu.phi, mu.nTrackerLayers, u1))
 
-        else:
-            pt_corr = list(
-                mu.pt *
-                mk_safe(roccor.kScaleDT, mu.charge, mu.pt, mu.eta, mu.phi)
-                for mu in muons)
-            pt_err = list(
-                mu.pt *
-                mk_safe(roccor.kScaleDTerror, mu.charge, mu.pt, mu.eta, mu.phi)
-                for mu in muons)
-
         self.out.fillBranch("Muon_corrected_pt", pt_corr)
         pt_corr_up = list(
             max(pt_corr[imu] + pt_err[imu], 0.0)
@@ -104,6 +123,13 @@ muonScaleRes2017 = lambda: muonScaleResProducer('roccor.Run2.v5',
                                                 'RoccoR2017UL.txt', 2017)
 muonScaleRes2018 = lambda: muonScaleResProducer('roccor.Run2.v5',
                                                 'RoccoR2018UL.txt', 2018)
+# Add Run3 muon correction lambdas
+muonScaleResRun3_2022 = lambda: muonScaleResProducer('roccor.Run3.v1', '2022_Summer22.json', 2022)
+muonScaleResRun3_2022EE = lambda: muonScaleResProducer('roccor.Run3.v1', '2022_Summer22EE.json', 2022)
+muonScaleResRun3_2023 = lambda: muonScaleResProducer('roccor.Run3.v1', '2023_Summer23.json', 2023)
+muonScaleResRun3_2023BPix = lambda: muonScaleResProducer('roccor.Run3.v1', '2023_Summer23BPix.json', 2023)
 #https://twiki.cern.ch/twiki/bin/viewauth/CMS/RochcorMuon
 # run3 
 #https://muon-wiki.docs.cern.ch/guidelines/corrections/#__tabbed_6_2
+# muon scale and resolution for Run3
+# https://gitlab.cern.ch/cms-muonPOG/muonscarekit

@@ -3,6 +3,7 @@
 #include <cmath>
 #include "correction.h"
 #include "correction.cc"
+// get correction code from https://github.com/cms-nanoAOD/correctionlib
 
 // Global CorrectionSet pointer used by MuonScaRe.cc
 static std::shared_ptr<correction::CorrectionSet> cset_ptr;

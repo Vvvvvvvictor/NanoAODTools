@@ -8,23 +8,25 @@ ROOT.PyConfig.IgnoreCommandLineOptions = True
 
 def mk_safe(fct, *args):
     try:
-        return fct(*args)
+        result = fct(*args)
+        return result
     except Exception as e:
-        if any('Error in function boost::math::erf_inv' in arg
+        if any('Error in function boost::math::erf_inv' in str(arg)
                for arg in e.args):
             print(
                 'WARNING: catching exception and returning -1. Exception arguments: %s'
                 % e.args)
             return -1.
         else:
+            print('ERROR in mk_safe: %s' % e.args)
             raise e
 
 
 class muonScaleResProducer(Module):
     def __init__(self, rc_dir, rc_corrections, dataYear):
+        self.rc_dir = rc_dir  # Store rc_dir as instance variable
         p_postproc = '%s/src/PhysicsTools/NanoAODTools/python/postprocessing' % os.environ[
             'CMSSW_BASE']
-        self.rc_dir = rc_dir
         p_roccor = p_postproc + '/data/' + self.rc_dir
         # Use RoccoR for Run2, MuonScaReWrapper for Run3
         if self.rc_dir.startswith('roccor.Run3'):
@@ -50,9 +52,17 @@ class muonScaleResProducer(Module):
 
     def beginFile(self, inputFile, outputFile, inputTree, wrappedOutputTree):
         self.out = wrappedOutputTree
+        # self.out.branch("Muon_pt", "F", lenVar="nMuon")
         self.out.branch("Muon_corrected_pt", "F", lenVar="nMuon")
-        self.out.branch("Muon_correctedUp_pt", "F", lenVar="nMuon")
-        self.out.branch("Muon_correctedDown_pt", "F", lenVar="nMuon")
+        # For Run3, add separate scale and smear uncertainty branches
+        if hasattr(self, 'rc_dir') and self.rc_dir.startswith('roccor.Run3'):
+            self.out.branch("Muon_scaleUp_pt", "F", lenVar="nMuon")
+            self.out.branch("Muon_scaleDown_pt", "F", lenVar="nMuon")
+            self.out.branch("Muon_smearUp_pt", "F", lenVar="nMuon")
+            self.out.branch("Muon_smearDown_pt", "F", lenVar="nMuon")
+        else:
+            self.out.branch("Muon_correctedUp_pt", "F", lenVar="nMuon")
+            self.out.branch("Muon_correctedDown_pt", "F", lenVar="nMuon")
         self.is_mc = bool(inputTree.GetBranch("GenJet_pt"))
 
     def endFile(self, inputFile, outputFile, inputTree, wrappedOutputTree):
@@ -65,20 +75,51 @@ class muonScaleResProducer(Module):
         roccor = self._roccor
         # Run3 branch: call MuonScaReWrapper interface
         if self.rc_dir.startswith('roccor.Run3'):
+            # pt = []
             pt_corr = []
-            pt_err = []
+            pt_scale_err = []
+            pt_smear_err = []
             for mu in muons:
                 if self.is_mc:
-                    # MC: smearing
+                    # MC: smearing - use separate function calls instead of tuple
                     u1 = random.uniform(0.0, 1.0)
-                    corr = mk_safe(roccor.kSmearMC, mu.charge, mu.pt, mu.eta, mu.phi, mu.nTrackerLayers, u1)
-                    corr_err = mk_safe(roccor.kSmearMCerror, mu.charge, mu.pt, mu.eta, mu.phi, mu.nTrackerLayers, u1)
+                    scale = mk_safe(roccor.kScaleMC, mu.charge, mu.bsConstrainedPt, mu.eta, mu.phi)
+                    smear = mk_safe(roccor.kSmearMC, scale, mu.eta, mu.nTrackerLayers)
+
+                    scale_err = mk_safe(roccor.kSmearMCScaleErr, mu.charge, smear, mu.eta, mu.phi)
+                    smear_err = mk_safe(roccor.kSmearMCSmearErr, mu.charge, scale, smear, mu.eta)
+
+                    corr = smear
+
                 else:
                     # Data: scaling
                     corr = mk_safe(roccor.kScaleDT, mu.charge, mu.pt, mu.eta, mu.phi)
-                    corr_err = mk_safe(roccor.kScaleDTerror, mu.charge, mu.pt, mu.eta, mu.phi)
+                    scale_err = mk_safe(roccor.kScaleDTerror, mu.charge, mu.pt, mu.eta, mu.phi)
+                    smear_err = 0.0  # No smearing for data
+                
+                # pt.append(mu.pt)
                 pt_corr.append(corr)
-                pt_err.append(corr_err)
+                pt_scale_err.append(scale_err)
+                pt_smear_err.append(smear_err)
+
+            # self.out.fillBranch("Muon_pt", pt)
+            self.out.fillBranch("Muon_corrected_pt", pt_corr)
+            pt_scale_up = list(
+                max(pt_corr[imu] + pt_scale_err[imu], 0.0)
+                for imu, mu in enumerate(muons))
+            pt_scale_down = list(
+                max(pt_corr[imu] - pt_scale_err[imu], 0.0)
+                for imu, mu in enumerate(muons))
+            pt_smear_up = list(
+                max(pt_corr[imu] + pt_smear_err[imu], 0.0)
+                for imu, mu in enumerate(muons))
+            pt_smear_down = list(
+                max(pt_corr[imu] - pt_smear_err[imu], 0.0)
+                for imu, mu in enumerate(muons))
+            self.out.fillBranch("Muon_scaleUp_pt", pt_scale_up)
+            self.out.fillBranch("Muon_scaleDown_pt", pt_scale_down)
+            self.out.fillBranch("Muon_smearUp_pt", pt_smear_up)
+            self.out.fillBranch("Muon_smearDown_pt", pt_smear_down)
         else:
             # Original Run2 processing
             genparticles = Collection(event, "GenPart")
@@ -103,15 +144,15 @@ class muonScaleResProducer(Module):
                         mu.pt * mk_safe(roccor.kSmearMCerror, mu.charge, mu.pt,
                                         mu.eta, mu.phi, mu.nTrackerLayers, u1))
 
-        self.out.fillBranch("Muon_corrected_pt", pt_corr)
-        pt_corr_up = list(
-            max(pt_corr[imu] + pt_err[imu], 0.0)
-            for imu, mu in enumerate(muons))
-        pt_corr_down = list(
-            max(pt_corr[imu] - pt_err[imu], 0.0)
-            for imu, mu in enumerate(muons))
-        self.out.fillBranch("Muon_correctedUp_pt", pt_corr_up)
-        self.out.fillBranch("Muon_correctedDown_pt", pt_corr_down)
+            self.out.fillBranch("Muon_corrected_pt", pt_corr)
+            pt_corr_up = list(
+                max(pt_corr[imu] + pt_err[imu], 0.0)
+                for imu, mu in enumerate(muons))
+            pt_corr_down = list(
+                max(pt_corr[imu] - pt_err[imu], 0.0)
+                for imu, mu in enumerate(muons))
+            self.out.fillBranch("Muon_correctedUp_pt", pt_corr_up)
+            self.out.fillBranch("Muon_correctedDown_pt", pt_corr_down)
         return True
 
 

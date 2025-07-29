@@ -1,6 +1,7 @@
 #include <string>
 #include <memory>
 #include <cmath>
+#include <tuple>
 #include "correction.h"
 #include "correction.cc"
 // get correction code from https://github.com/cms-nanoAOD/correctionlib
@@ -33,16 +34,24 @@ public:
         return fabs(up - nom);
     }
 
-    // MC resolution smearing
-    double kSmearMC(int charge, double pt, double eta, double phi, int nTrkLayers, double rndm) const {
-        double scaled = pt_scale(false, pt, eta, phi, charge);
+    // MC resolution smearing - returns the corrected pt
+    double kScaleMC(int charge, double pt, double eta, double phi) const {
+        return pt_scale(false, pt, eta, phi, charge);
+    }
+
+    double kSmearMC(double scaled, double eta, int nTrkLayers) const {
         return pt_resol(scaled, eta, nTrkLayers);
     }
-    // Uncertainty on MC smearing
-    double kSmearMCerror(int charge, double pt, double eta, double phi, int nTrkLayers, double rndm) const {
-        double scaled = pt_scale(false, pt, eta, phi, charge);
-        double smeared = pt_resol(scaled, eta, nTrkLayers);
-        double up = pt_resol_var(scaled, smeared, eta, std::string("up"));
-        return fabs(up - smeared);
+    
+    // MC scale uncertainty
+    double kSmearMCScaleErr(int charge, double smeared, double eta, double phi) const {
+        double scale_up = pt_scale_var(smeared, eta, phi, charge, std::string("up"));
+        return fabs(scale_up - smeared);
+    }
+    
+    // MC smear uncertainty
+    double kSmearMCSmearErr(int charge, double scaled, double smeared, double eta) const {
+        double smear_up = pt_resol_var(scaled, smeared, eta, std::string("up"));
+        return fabs(smear_up - smeared);
     }
 };
